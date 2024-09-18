@@ -22,6 +22,17 @@ pub const GENERIC_PROMPT_FORMAT: PromptFormat<'static> = PromptFormat {
     end: "### Response:\n",
 };
 
+pub const ANTHROPIC_PROMPT_FORMAT: PromptFormat<'static> = PromptFormat {
+    begin: "",
+    system_pre_message: "",
+    system_post_message: "\n",
+    user_pre_message: "\nHuman: ",
+    user_post_message: "\n",
+    assistant_pre_message: "\nAssistant: ",
+    assistant_post_message: "\n",
+    end: "\nAssistant:",
+};
+
 pub const MISTRAL_PROMPT_FORMAT: PromptFormat<'static> = PromptFormat {
     begin: "",
     system_pre_message: "[INST] <<SYS>>",
@@ -144,7 +155,74 @@ pub fn smart_prompt_format(model_name: &str) -> PromptFormat<'static> {
         COMMAND_R_PROMPT_FORMAT
     } else if model_name.contains("qwen") {
         QWEN_PROMPT_FORMAT
+    } else if model_name.contains("claude") {
+        ANTHROPIC_PROMPT_FORMAT
     } else {
         GENERIC_PROMPT_FORMAT
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_prompt_with_alternating_messages() {
+        let messages = vec![
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("Hello, how are you?".to_string()),
+            },
+            Message {
+                role: MessageRole::Assistant,
+                content: MessageContent::Text(
+                    "I'm doing well, thank you! How can I assist you today?".to_string(),
+                ),
+            },
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("Can you explain quantum computing?".to_string()),
+            },
+        ];
+
+        let result = generate_prompt(&messages, GENERIC_PROMPT_FORMAT).unwrap();
+        let expected = "\
+### Instruction:
+Hello, how are you?
+### Response:
+I'm doing well, thank you! How can I assist you today?
+### Instruction:
+Can you explain quantum computing?
+### Response:
+";
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_generate_prompt_with_anthropic_format() {
+        let messages = vec![
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("What's the capital of France?".to_string()),
+            },
+            Message {
+                role: MessageRole::Assistant,
+                content: MessageContent::Text("The capital of France is Paris.".to_string()),
+            },
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("And what's the capital of Italy?".to_string()),
+            },
+        ];
+
+        let result = generate_prompt(&messages, ANTHROPIC_PROMPT_FORMAT).unwrap();
+        let expected = "\
+\n\nHuman: What's the capital of France?
+\nAssistant: The capital of France is Paris.
+\nHuman: And what's the capital of Italy?
+\nAssistant: ";
+
+        assert_eq!(result, expected);
     }
 }
