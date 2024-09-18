@@ -1,6 +1,138 @@
 # Notes:
 #  - do not submit pull requests to add new models; this list will be updated in batches with new releases.
 
+- platform: straico
+  models:
+    # Anthropic:
+    - name: anthropic/claude-3.5-sonnet
+      max_input_tokens: 200000
+      max_output_tokens: 8192
+      require_max_tokens: true
+      input_price: 0
+      output_price: 0
+      supports_vision: false
+      supports_function_calling: false
+    - name: anthropic/claude-3-opus
+      max_input_tokens: 200000
+      max_output_tokens: 4096
+      require_max_tokens: true
+      input_price: 0
+      output_price: 0
+      supports_vision: false
+      supports_function_calling: false
+    - name: anthropic/claude-3-sonnet
+      max_input_tokens: 200000
+      max_output_tokens: 4096
+      require_max_tokens: true
+      input_price: 0
+      output_price: 0
+      supports_vision: false
+    - name: anthropic/claude-3-haiku
+      max_input_tokens: 200000
+      max_output_tokens: 4096
+      require_max_tokens: true
+      input_price: 0
+      output_price: 0
+      supports_vision: false
+      supports_function_calling: false
+
+    # Cohere:
+    - name: cohere/command-r-plus-08-2024
+      max_input_tokens: 128000
+      input_price: 0
+      output_price: 0
+      supports_function_calling: true
+    - name: cohere/command-r-08-2024
+      max_input_tokens: 128000
+      input_price: 0.15
+      output_price: 0.6
+      supports_function_calling: true
+
+    # Google:
+    - name: google/gemini-pro-1.5
+      max_input_tokens: 2097152
+      max_output_tokens: 8192
+      input_price: 1.25
+      output_price: 3.75
+      supports_vision: true
+      supports_function_calling: true    
+    - name: google/gemma-2-27b-it
+      max_input_tokens: 8192
+      input_price: 0.27
+      output_price: 0.27
+      supports_vision: true
+      supports_function_calling: true    
+
+    # Meta
+    - name: meta-llama/llama-3-8b-instruct
+      max_input_tokens: 8192
+      input_price: 0
+      output_price: 0
+      supports_vision: false
+      supports_function_calling: false
+    - name: meta-llama/llama-3.1-70b-instruct
+      max_input_tokens: 8192
+      input_price: 0
+      output_price: 0
+      supports_vision: false
+      supports_function_calling: false
+    - name: meta-llama/llama-3.1-405b-instruct       
+      max_input_tokens: 8192
+      input_price: 0
+      output_price: 0
+      supports_vision: false
+      supports_function_calling: false
+
+    # Mistral
+    - name: mistralai/codestral-mamba
+      max_input_tokens: 256000
+      input_price: 0.25
+      output_price: 0.25
+      supports_vision: false
+      supports_function_calling: false
+    - name: mistralai/mistral-large
+      max_input_tokens: 128000
+      input_price: 3
+      output_price: 9
+      supports_vision: false
+      supports_function_calling: true
+
+    # OpenAi:
+    - name: openai/gpt-3.5-turbo-0125
+      max_input_tokens: 16385
+      max_output_tokens: 4096
+      input_price: 0.5
+      output_price: 1.5
+      supports_function_calling: true
+    - name: openai/gpt-4-turbo-2024-04-09
+      max_input_tokens: 128000
+      max_output_tokens: 4096
+      input_price: 10
+      output_price: 30
+      supports_vision: true
+    - name: openai/gpt-4o-2024-08-06
+      max_input_tokens: 128000
+      max_output_tokens: 16384
+      input_price: 2.5
+      output_price: 10
+      supports_vision: true
+      supports_function_calling: true
+    - name: openai/gpt-4o
+      max_input_tokens: 128000
+      max_output_tokens: 4096
+      input_price: 5
+      output_price: 15
+      supports_vision: true
+      supports_function_calling: true
+    - name: openai/gpt-4o-mini
+      max_input_tokens: 128000
+      max_output_tokens: 16384
+      input_price: 0
+      output_price: 0
+      supports_vision: false
+      supports_function_calling: false
+
+
 # Links:
 #  - https://platform.openai.com/docs/models
 #  - https://openai.com/pricing
