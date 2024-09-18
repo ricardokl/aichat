@@ -35,6 +35,7 @@ register_client!(
     (bedrock, "bedrock", BedrockConfig, BedrockClient),
     (replicate, "replicate", ReplicateConfig, ReplicateClient),
     (ernie, "ernie", ErnieConfig, ErnieClient),
+    (straico, "straico", StraicoConfig, StraicoClient),
 );
 
 pub const OPENAI_COMPATIBLE_PLATFORMS: [(&str, &str); 21] = [
