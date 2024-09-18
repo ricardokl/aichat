@@ -233,6 +233,9 @@ async fn shell_execute(config: &GlobalConfig, shell: &Shell, mut input: Input) -
     config
         .write()
         .after_chat_completion(&input, &eval_str, &[])?;
+    if eval_str.is_empty() {
+        bail!("No command generated");
+    }
     if config.read().dry_run {
         config.read().print_markdown(&eval_str)?;
         return Ok(());
@@ -314,7 +317,7 @@ async fn create_input(
 }
 
 fn setup_logger(is_serve: bool) -> Result<()> {
-    let (log_level, log_path) = Config::log(is_serve)?;
+    let (log_level, log_path) = Config::log_config(is_serve)?;
     if log_level == LevelFilter::Off {
         return Ok(());
     }
