@@ -131,7 +131,28 @@
       output_price: 0
       supports_vision: false
       supports_function_calling: false
+    - name: openai/o1-preview
+      max_input_tokens: 128000
+      max_output_tokens: 16384
+      input_price: 0
+      output_price: 0
+      supports_vision: false
+      supports_function_calling: false
+    - name: openai/o1-mini
+      max_input_tokens: 128000
+      max_output_tokens: 16384
+      input_price: 0
+      output_price: 0
+      supports_vision: false
+      supports_function_calling: false
 
+    - name: nousresearch/hermes-3-llama-3.1-405b,
+      input_price: 0
+      output_price: 0
+      max_input_tokens: 128000
+      max_output_tokens: 4096
+      supports_vision: false
+      supports_function_calling: true
 
 # Links:
 #  - https://platform.openai.com/docs/models
