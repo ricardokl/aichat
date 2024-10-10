@@ -75,7 +75,7 @@ async fn straico_chat_completions_streaming(
 fn straico_build_chat_completions_body(data: ChatCompletionsData, model: &Model) -> Result<Value> {
     let ChatCompletionsData {
         messages,
-        temperature: _,
+        temperature,
         top_p: _,
         functions: _,
         stream: _,
@@ -86,6 +86,7 @@ fn straico_build_chat_completions_body(data: ChatCompletionsData, model: &Model)
     Ok(json!({
         "message": prompt,
         "models": [model.name()],
+        "temperature": temperature,
     }))
 
     // Ok(body)
