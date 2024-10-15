@@ -31,6 +31,7 @@ use unicode_segmentation::UnicodeSegmentation;
 lazy_static::lazy_static! {
     pub static ref CODE_BLOCK_RE: Regex = Regex::new(r"(?ms)```\w*(.*)```").unwrap();
     pub static ref IS_STDOUT_TERMINAL: bool = std::io::stdout().is_terminal();
+    pub static ref NO_COLOR: bool = env::var("NO_COLOR").ok().and_then(|v| parse_bool(&v)).unwrap_or_default() || !*IS_STDOUT_TERMINAL;
 }
 
 pub fn now() -> String {
@@ -44,6 +45,14 @@ pub fn get_env_name(key: &str) -> String {
 
 pub fn normalize_env_name(value: &str) -> String {
     value.replace('-', "_").to_ascii_uppercase()
+}
+
+pub fn parse_bool(value: &str) -> Option<bool> {
+    match value {
+        "1" | "true" => Some(true),
+        "0" | "false" => Some(false),
+        _ => None,
+    }
 }
 
 pub fn estimate_token_length(text: &str) -> usize {
@@ -127,9 +136,11 @@ pub fn fuzzy_match(text: &str, pattern: &str) -> bool {
 
 pub fn pretty_error(err: &anyhow::Error) -> String {
     let mut output = vec![];
-    output.push(err.to_string());
-    output.push("Caused by:".to_string());
+    output.push(format!("Error: {err}"));
     for (i, cause) in err.chain().skip(1).enumerate() {
+        if i == 0 {
+            output.push("Caused by:".to_string());
+        }
         output.push(format!("    {i}: {cause}"));
     }
     output.push(String::new());
@@ -137,20 +148,27 @@ pub fn pretty_error(err: &anyhow::Error) -> String {
 }
 
 pub fn error_text(input: &str) -> String {
-    nu_ansi_term::Style::new()
-        .fg(nu_ansi_term::Color::Red)
-        .paint(input)
-        .to_string()
+    color_text(input, nu_ansi_term::Color::Red)
 }
 
 pub fn warning_text(input: &str) -> String {
+    color_text(input, nu_ansi_term::Color::Yellow)
+}
+
+pub fn color_text(input: &str, color: nu_ansi_term::Color) -> String {
+    if *NO_COLOR {
+        return input.to_string();
+    }
     nu_ansi_term::Style::new()
-        .fg(nu_ansi_term::Color::Yellow)
+        .fg(color)
         .paint(input)
         .to_string()
 }
 
 pub fn dimmed_text(input: &str) -> String {
+    if *NO_COLOR {
+        return input.to_string();
+    }
     nu_ansi_term::Style::new().dimmed().paint(input).to_string()
 }
 

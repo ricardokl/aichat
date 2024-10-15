@@ -23,20 +23,18 @@ use crate::config::{
 use crate::function::{eval_tool_calls, need_send_tool_results};
 use crate::render::render_error;
 use crate::repl::Repl;
-use crate::utils::{
-    create_abort_signal, create_spinner, extract_block, get_env_name, run_command,
-    run_with_spinner, AbortSignal, Shell, CODE_BLOCK_RE, IS_STDOUT_TERMINAL, SHELL,
-};
+use crate::utils::*;
 
 use anyhow::{bail, Result};
 use clap::Parser;
-use inquire::{Select, Text};
+use inquire::validator::Validation;
+use inquire::Text;
 use is_terminal::IsTerminal;
 use parking_lot::RwLock;
 use simplelog::{format_description, ConfigBuilder, LevelFilter, SimpleLogger, WriteLogger};
 use std::{
     env,
-    io::{stderr, stdin, Read},
+    io::{stdin, Read},
     process,
     sync::Arc,
 };
@@ -52,14 +50,12 @@ async fn main() -> Result<()> {
     } else if text.is_none() && cli.file.is_empty() {
         WorkingMode::Repl
     } else {
-        WorkingMode::Command
+        WorkingMode::Cmd
     };
     setup_logger(working_mode.is_serve())?;
     let config = Arc::new(RwLock::new(Config::init(working_mode)?));
-    let highlight = config.read().highlight;
     if let Err(err) = run(config, cli, text).await {
-        let highlight = stderr().is_terminal() && highlight;
-        render_error(err, highlight);
+        render_error(err);
         std::process::exit(1);
     }
     Ok(())
@@ -132,6 +128,9 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
     if cli.no_stream {
         config.write().stream = false;
     }
+    if cli.empty_session {
+        config.write().empty_session()?;
+    }
     if cli.save_session {
         config.write().set_save_session(Some(true));
     }
@@ -153,7 +152,12 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
             input.use_embeddings(abort_signal.clone()).await?;
             start_directive(&config, input, cli.code, abort_signal).await
         }
-        true => start_interactive(&config).await,
+        true => {
+            if !*IS_STDOUT_TERMINAL {
+                bail!("No TTY for REPL")
+            }
+            start_interactive(&config).await
+        }
     }
 }
 
@@ -241,28 +245,41 @@ async fn shell_execute(config: &GlobalConfig, shell: &Shell, mut input: Input) -
         return Ok(());
     }
     if *IS_STDOUT_TERMINAL {
+        let options = ["execute", "revise", "describe", "cancel"];
+        let command = color_text(eval_str.trim(), nu_ansi_term::Color::Rgb(255, 165, 0));
+        let first_letter_color = nu_ansi_term::Color::Cyan;
+        let prompt_text = options
+            .iter()
+            .map(|v| format!("{}{}", color_text(&v[0..1], first_letter_color), &v[1..]))
+            .collect::<Vec<String>>()
+            .join(&dimmed_text(" | "));
         loop {
-            let answer = Select::new(
-                eval_str.trim(),
-                vec!["✅ Execute", "🔄 Revise", "📖 Explain", "❌ Cancel"],
-            )
-            .prompt()?;
+            println!("{command}");
+            let answer = Text::new(&format!("{prompt_text}:"))
+                .with_default("e")
+                .with_validator(|input: &str| match matches!(input, "e" | "r" | "d" | "c") {
+                    true => Ok(Validation::Valid),
+                    false => Ok(Validation::Invalid(
+                        "Invalid option, choice one of e, r, d or c".into(),
+                    )),
+                })
+                .prompt()?;
 
-            match answer {
-                "✅ Execute" => {
+            match answer.as_str() {
+                "e" => {
                     debug!("{} {:?}", shell.cmd, &[&shell.arg, &eval_str]);
                     let code = run_command(&shell.cmd, &[&shell.arg, &eval_str], None)?;
                     if code != 0 {
                         process::exit(code);
                     }
                 }
-                "🔄 Revise" => {
+                "r" => {
                     let revision = Text::new("Enter your revision:").prompt()?;
                     let text = format!("{}\n{revision}", input.text());
                     input.set_text(text);
                     return shell_execute(config, shell, input).await;
                 }
-                "📖 Explain" => {
+                "d" => {
                     let role = config.read().retrieve_role(EXPLAIN_SHELL_ROLE)?;
                     let input = Input::from_str(config, &eval_str, Some(role));
                     let abort = create_abort_signal();
