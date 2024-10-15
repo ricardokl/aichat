@@ -35,6 +35,12 @@
       output_price: 0
       supports_vision: false
       supports_function_calling: false
+    - name: qwen/qwen-2.5-72b-instruct
+      max_input_tokens: 32768
+      input_price: 0
+      output_price: 0
+      supports_function_calling: false
+
 
     # Cohere:
     - name: cohere/command-r-plus-08-2024
