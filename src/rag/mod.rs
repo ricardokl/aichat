@@ -19,7 +19,8 @@ use parking_lot::RwLock;
 use path_absolutize::Absolutize;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{collections::HashMap, fmt::Debug, fs, path::Path};
+use std::{collections::HashMap, env, fmt::Debug, fs, path::Path, time::Duration};
+use tokio::time::sleep;
 
 pub struct Rag {
     config: GlobalConfig,
@@ -78,6 +79,7 @@ impl Rag {
             chunk_overlap,
             reranker_model,
             top_k,
+            embedding_model.max_batch_size(),
         );
         let mut rag = Self::create(config, name, save_path, data)?;
         let mut paths = doc_paths.to_vec();
@@ -288,6 +290,7 @@ impl Rag {
             "chunk_overlap": self.data.chunk_overlap,
             "reranker_model": self.data.reranker_model,
             "top_k": self.data.top_k,
+            "batch_size": self.data.batch_size,
             "document_paths": self.data.document_paths,
             "files": files,
         });
@@ -481,7 +484,7 @@ impl Rag {
                     }
                 }
                 let data = RerankData::new(query.to_string(), documents, top_k);
-                let list = client.rerank(data).await?;
+                let list = client.rerank(&data).await.context("Failed to rerank")?;
                 let ids: Vec<_> = list
                     .into_iter()
                     .take(top_k)
@@ -559,19 +562,27 @@ impl Rag {
     ) -> Result<EmbeddingsOutput> {
         let embedding_client = init_client(&self.config, Some(self.embedding_model.clone()))?;
         let EmbeddingsData { texts, query } = data;
-        let size = match self.embedding_model.max_input_tokens() {
+        let batch_size = self
+            .data
+            .batch_size
+            .or_else(|| self.embedding_model.max_batch_size());
+        let batch_size = match self.embedding_model.max_input_tokens() {
             Some(max_input_tokens) => {
                 let x = max_input_tokens / self.data.chunk_size;
-                match self.embedding_model.max_batch_size() {
+                match batch_size {
                     Some(y) => x.min(y),
                     None => x,
                 }
             }
-            None => self.embedding_model.max_batch_size().unwrap_or(1),
+            None => batch_size.unwrap_or(1),
         };
         let mut output = vec![];
-        let batch_chunks = texts.chunks(size.max(1));
+        let batch_chunks = texts.chunks(batch_size.max(1));
         let batch_chunks_len = batch_chunks.len();
+        let retry_limit = env::var(get_env_name("embeddings_retry_limit"))
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(2);
         for (index, texts) in batch_chunks.enumerate() {
             progress(
                 &spinner,
@@ -581,10 +592,23 @@ impl Rag {
                 texts: texts.to_vec(),
                 query,
             };
-            let chunk_output = embedding_client
-                .embeddings(chunk_data)
-                .await
-                .context("Failed to create embedding")?;
+            let mut retry = 0;
+            let chunk_output = loop {
+                retry += 1;
+                match embedding_client.embeddings(&chunk_data).await {
+                    Ok(v) => break v,
+                    Err(e) if retry < retry_limit => {
+                        debug!("retry {} failed: {}", retry, e);
+                        sleep(Duration::from_secs(2u64.pow(retry - 1))).await;
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(e).with_context(|| {
+                            format!("Failed to create embedding after {retry_limit} attempts")
+                        })?
+                    }
+                }
+            };
             output.extend(chunk_output);
         }
         Ok(output)
@@ -598,6 +622,7 @@ pub struct RagData {
     pub chunk_overlap: usize,
     pub reranker_model: Option<String>,
     pub top_k: usize,
+    pub batch_size: Option<usize>,
     pub next_file_id: FileId,
     pub document_paths: Vec<String>,
     pub files: IndexMap<FileId, RagFile>,
@@ -611,6 +636,9 @@ impl Debug for RagData {
             .field("embedding_model", &self.embedding_model)
             .field("chunk_size", &self.chunk_size)
             .field("chunk_overlap", &self.chunk_overlap)
+            .field("reranker_model", &self.reranker_model)
+            .field("top_k", &self.top_k)
+            .field("batch_size", &self.batch_size)
             .field("next_file_id", &self.next_file_id)
             .field("document_paths", &self.document_paths)
             .field("files", &self.files)
@@ -625,6 +653,7 @@ impl RagData {
         chunk_overlap: usize,
         reranker_model: Option<String>,
         top_k: usize,
+        batch_size: Option<usize>,
     ) -> Self {
         Self {
             embedding_model,
@@ -632,6 +661,7 @@ impl RagData {
             chunk_overlap,
             reranker_model,
             top_k,
+            batch_size,
             next_file_id: 0,
             document_paths: Default::default(),
             files: Default::default(),

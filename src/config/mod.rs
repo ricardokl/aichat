@@ -205,7 +205,7 @@ impl Default for Config {
             agent: None,
             model: Default::default(),
             functions: Default::default(),
-            working_mode: WorkingMode::Command,
+            working_mode: WorkingMode::Cmd,
             last_message: None,
         }
     }
@@ -247,13 +247,13 @@ impl Config {
     }
 
     pub fn config_dir() -> Result<PathBuf> {
-        let env_name = get_env_name("config_dir");
-        let path = if let Some(v) = env::var_os(env_name) {
+        let path = if let Ok(v) = env::var(get_env_name("config_dir")) {
             PathBuf::from(v)
+        } else if let Ok(v) = env::var("XDG_CONFIG_HOME") {
+            PathBuf::from(v).join(env!("CARGO_CRATE_NAME"))
         } else {
-            let mut dir = dirs::config_dir().ok_or_else(|| anyhow!("Not found config dir"))?;
-            dir.push(env!("CARGO_CRATE_NAME"));
-            dir
+            let dir = dirs::config_dir().ok_or_else(|| anyhow!("Not available config dir"))?;
+            dir.join(env!("CARGO_CRATE_NAME"))
         };
         Ok(path)
     }
@@ -706,7 +706,7 @@ impl Config {
                 }
             }
         }
-        println!("✨ Successfully deleted {kind}.");
+        println!("✨ Successfully deleted {kind}");
         Ok(())
     }
 
@@ -839,10 +839,14 @@ impl Config {
 
     pub fn role_info(&self) -> Result<String> {
         if let Some(role) = &self.role {
-            Ok(role.export())
-        } else {
-            bail!("No role")
+            return Ok(role.export());
+        } else if let Some(session) = &self.session {
+            let role = session.to_role();
+            if !role.name().is_empty() {
+                return Ok(role.export());
+            }
         }
+        bail!("No role");
     }
 
     pub fn exit_role(&mut self) -> Result<()> {
@@ -1086,11 +1090,11 @@ impl Config {
         Ok(())
     }
 
-    pub fn clear_session_messages(&mut self) -> Result<()> {
+    pub fn empty_session(&mut self) -> Result<()> {
         if let Some(session) = self.session.as_mut() {
             session.clear_messages();
-            if let Some(prompt) = self.agent.as_ref().map(|v| v.interpolated_instructions()) {
-                session.update_role_prompt(&prompt);
+            if let Some(agent) = self.agent.as_ref() {
+                session.set_agent(agent);
             }
         } else {
             bail!("No session")
@@ -1133,11 +1137,28 @@ impl Config {
         false
     }
 
-    pub fn compress_session(&mut self, summary: &str) {
-        if let Some(session) = self.session.as_mut() {
-            let summary_prompt = self.summary_prompt.as_deref().unwrap_or(SUMMARY_PROMPT);
+    pub async fn compress_session(config: &GlobalConfig) -> Result<()> {
+        match config.read().session.as_ref() {
+            Some(session) => {
+                if !session.has_user_messages() {
+                    bail!("No need to compress since there are no messages in the session")
+                }
+            }
+            None => bail!("No session"),
+        }
+        let input = Input::from_str(config, config.read().summarize_prompt(), None);
+        let client = input.create_client()?;
+        let summary = client.chat_completions(input).await?.text;
+        let summary_prompt = config
+            .read()
+            .summary_prompt
+            .clone()
+            .unwrap_or_else(|| SUMMARY_PROMPT.into());
+        if let Some(session) = config.write().session.as_mut() {
             session.compress(format!("{}{}", summary_prompt, summary));
         }
+        config.write().last_message = None;
+        Ok(())
     }
 
     pub fn summarize_prompt(&self) -> &str {
@@ -1155,7 +1176,6 @@ impl Config {
         if let Some(session) = self.session.as_mut() {
             session.set_compressing(false);
         }
-        self.last_message = None;
     }
 
     pub async fn use_rag(
@@ -1179,6 +1199,9 @@ impl Config {
             Some(name) => {
                 let rag_path = config.read().rag_file(name)?;
                 if !rag_path.exists() {
+                    if config.read().working_mode.is_cmd() {
+                        bail!("Unknown RAG '{name}'")
+                    }
                     Rag::init(config, name, &rag_path, &[], abort_signal).await?
                 } else {
                     Rag::load(config, name, &rag_path)?
@@ -1355,8 +1378,11 @@ impl Config {
     }
 
     pub fn apply_prelude(&mut self) -> Result<()> {
+        if !self.state().is_empty() {
+            return Ok(());
+        }
         let prelude = match self.working_mode {
-            WorkingMode::Command => self.prelude.as_ref(),
+            WorkingMode::Cmd => self.prelude.as_ref(),
             WorkingMode::Repl => self.repl_prelude.as_ref().or(self.prelude.as_ref()),
             WorkingMode::Serve => return Ok(()),
         };
@@ -1373,13 +1399,15 @@ impl Config {
         let err_msg = || format!("Invalid prelude '{}", prelude);
         match prelude.split_once(':') {
             Some(("role", name)) => {
-                if self.state().is_empty() {
-                    self.use_role(name).with_context(err_msg)?;
-                }
+                self.use_role(name).with_context(err_msg)?;
             }
             Some(("session", name)) => {
-                if self.session.is_none() {
-                    self.use_session(Some(name)).with_context(err_msg)?;
+                self.use_session(Some(name)).with_context(err_msg)?;
+            }
+            Some((session_name, role_name)) => {
+                self.use_session(Some(session_name)).with_context(err_msg)?;
+                if let Some(true) = self.session.as_ref().map(|v| v.is_empty()) {
+                    self.use_role(role_name).with_context(err_msg)?;
                 }
             }
             _ => {
@@ -1759,7 +1787,7 @@ impl Config {
         }
         let timestamp = now();
         let summary = input.summary();
-        let input_markdown = input.render();
+        let raw_input = input.raw();
         let scope = if self.agent.is_none() {
             let role_name = if input.role().is_derived() {
                 None
@@ -1775,7 +1803,9 @@ impl Config {
         } else {
             String::new()
         };
-        let output = format!("# CHAT: {summary} [{timestamp}]{scope}\n{input_markdown}\n--------\n{output}\n--------\n\n",);
+        let output = format!(
+            "# CHAT: {summary} [{timestamp}]{scope}\n{raw_input}\n--------\n{output}\n--------\n\n",
+        );
         file.write_all(output.as_bytes())
             .with_context(|| "Failed to save message")
     }
@@ -1939,10 +1969,8 @@ impl Config {
         if let Some(Some(v)) = read_env_bool("highlight") {
             self.highlight = v;
         }
-        if let Ok(value) = env::var("NO_COLOR") {
-            if let Some(false) = parse_bool(&value) {
-                self.highlight = false;
-            }
+        if *NO_COLOR {
+            self.highlight = false;
         }
         if let Some(Some(v)) = read_env_bool("light_theme") {
             self.light_theme = v;
@@ -2015,12 +2043,15 @@ pub fn load_env_file() -> Result<()> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorkingMode {
-    Command,
+    Cmd,
     Repl,
     Serve,
 }
 
 impl WorkingMode {
+    pub fn is_cmd(&self) -> bool {
+        *self == WorkingMode::Cmd
+    }
     pub fn is_repl(&self) -> bool {
         *self == WorkingMode::Repl
     }
@@ -2134,14 +2165,6 @@ where
 fn read_env_bool(key: &str) -> Option<Option<bool>> {
     let value = env::var(get_env_name(key)).ok()?;
     Some(parse_bool(&value))
-}
-
-fn parse_bool(value: &str) -> Option<bool> {
-    match value {
-        "1" | "true" => Some(true),
-        "0" | "false" => Some(false),
-        _ => None,
-    }
 }
 
 fn complete_bool(value: bool) -> Vec<String> {
