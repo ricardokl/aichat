@@ -94,6 +94,10 @@ impl Session {
         &self.name
     }
 
+    pub fn role_name(&self) -> Option<&str> {
+        self.role_name.as_deref()
+    }
+
     pub fn dirty(&self) -> bool {
         self.dirty
     }
@@ -240,14 +244,14 @@ impl Session {
         self.top_p = role.top_p();
         self.use_tools = role.use_tools();
         self.model = role.model().clone();
-        self.role_name = Some(role.name().to_string());
+        self.role_name = convert_option_string(role.name());
         self.role_prompt = role.prompt().to_string();
         self.dirty = true;
     }
 
     pub fn set_agent(&mut self, agent: &Agent) {
         self.role_prompt
-            .clone_from(&agent.definition().instructions);
+            .clone_from(&agent.interpolated_instructions());
     }
 
     pub fn clear_role(&mut self) {
@@ -349,7 +353,7 @@ impl Session {
         })?;
 
         if is_repl {
-            println!("✨ Saved session to '{}'", session_path.display());
+            println!("✨ Saved session to '{}'.", session_path.display());
         }
 
         if self.name() != session_name {
@@ -363,7 +367,7 @@ impl Session {
 
     pub fn guard_empty(&self) -> Result<()> {
         if !self.is_empty() {
-            bail!("This action cannot be performed in a session with messages.")
+            bail!("Cannot perform this operation because the session has messages, please `.empty session` first.");
         }
         Ok(())
     }

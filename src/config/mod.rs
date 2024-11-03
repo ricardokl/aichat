@@ -65,19 +65,24 @@ const SUMMARIZE_PROMPT: &str =
     "Summarize the discussion briefly in 200 words or less to use as a prompt for future context.";
 const SUMMARY_PROMPT: &str = "This is a summary of the chat history as a recap: ";
 
-const RAG_TEMPLATE: &str = r#"Use the following context as your learned knowledge, inside <context></context> XML tags.
+const RAG_TEMPLATE: &str = r#"Answer the query based on the context while respecting the rules. (user query, some textual context and rules, all inside xml tags)
+
 <context>
 __CONTEXT__
 </context>
 
-When answer to user:
-- If you don't know, just say that you don't know.
-- If you don't know when you are not sure, ask for clarification.
-Avoid mentioning that you obtained the information from the context.
-And answer according to the language of the user's question.
+<rules>
+- If you don't know, just say so.
+- If you are not sure, ask for clarification.
+- Answer in the same language as the user query.
+- If the context appears unreadable or of poor quality, tell the user then answer as best as you can.
+- If the answer is not in the context but you think you know the answer, explain that to the user then answer with your own knowledge.
+- Answer directly and without using xml tags.
+</rules>
 
-Given the context information, answer the query.
-Query: __INPUT__"#;
+<user_query>
+__INPUT__
+</user_query>"#;
 
 const LEFT_PROMPT: &str = "{color.green}{?session {?agent {agent}>}{session}{?role /}}{!session {?agent {agent}>}}{role}{?rag @{rag}}{color.cyan}{?session )}{!session >}{color.reset} ";
 const RIGHT_PROMPT: &str = "{color.purple}{?session {?consume_tokens {consume_tokens}({consume_percent}%)}{!consume_tokens {consume_tokens}}}{color.reset}";
@@ -295,7 +300,7 @@ impl Config {
                 Ok(value) => Ok(PathBuf::from(value)),
                 Err(_) => Self::local_path(MESSAGES_FILE_NAME),
             },
-            Some(agent) => Ok(Self::agent_config_dir(agent.name())?.join(MESSAGES_FILE_NAME)),
+            Some(agent) => Ok(Self::agent_data_dir(agent.name())?.join(MESSAGES_FILE_NAME)),
         }
     }
 
@@ -305,7 +310,7 @@ impl Config {
                 Ok(value) => Ok(PathBuf::from(value)),
                 Err(_) => Self::local_path(SESSIONS_DIR_NAME),
             },
-            Some(agent) => Ok(Self::agent_config_dir(agent.name())?.join(SESSIONS_DIR_NAME)),
+            Some(agent) => Ok(Self::agent_data_dir(agent.name())?.join(SESSIONS_DIR_NAME)),
         }
     }
 
@@ -343,27 +348,27 @@ impl Config {
         Ok(path)
     }
 
-    pub fn agents_config_dir() -> Result<PathBuf> {
+    pub fn agents_data_dir() -> Result<PathBuf> {
         Self::local_path(AGENTS_DIR_NAME)
     }
 
-    pub fn agent_config_dir(name: &str) -> Result<PathBuf> {
-        match env::var(format!("{}_CONFIG_DIR", normalize_env_name(name))) {
+    pub fn agent_data_dir(name: &str) -> Result<PathBuf> {
+        match env::var(format!("{}_DATA_DIR", normalize_env_name(name))) {
             Ok(value) => Ok(PathBuf::from(value)),
-            Err(_) => Ok(Self::agents_config_dir()?.join(name)),
+            Err(_) => Ok(Self::agents_data_dir()?.join(name)),
         }
     }
 
     pub fn agent_config_file(name: &str) -> Result<PathBuf> {
-        Ok(Self::agent_config_dir(name)?.join(CONFIG_FILE_NAME))
+        Ok(Self::agent_data_dir(name)?.join(CONFIG_FILE_NAME))
     }
 
     pub fn agent_rag_file(agent_name: &str, rag_name: &str) -> Result<PathBuf> {
-        Ok(Self::agent_config_dir(agent_name)?.join(format!("{rag_name}.yaml")))
+        Ok(Self::agent_data_dir(agent_name)?.join(format!("{rag_name}.yaml")))
     }
 
     pub fn agent_variables_file(name: &str) -> Result<PathBuf> {
-        Ok(Self::agent_config_dir(name)?.join(AGENT_VARIABLES_FILE_NAME))
+        Ok(Self::agent_data_dir(name)?.join(AGENT_VARIABLES_FILE_NAME))
     }
 
     pub fn agents_functions_dir() -> Result<PathBuf> {
@@ -385,12 +390,14 @@ impl Config {
             } else {
                 flags |= StateFlags::SESSION;
             }
+            if session.role_name().is_some() {
+                flags |= StateFlags::ROLE;
+            }
+        } else if self.role.is_some() {
+            flags |= StateFlags::ROLE;
         }
         if self.agent.is_some() {
             flags |= StateFlags::AGENT;
-        }
-        if self.role.is_some() {
-            flags |= StateFlags::ROLE;
         }
         if self.rag.is_some() {
             flags |= StateFlags::RAG;
@@ -644,10 +651,10 @@ impl Config {
 
     pub fn delete(config: &GlobalConfig, kind: &str) -> Result<()> {
         let (dir, file_ext) = match kind {
-            "roles" => (Self::roles_dir()?, Some(".md")),
-            "sessions" => (config.read().sessions_dir()?, Some(".yaml")),
-            "rags" => (Self::rags_dir()?, Some(".yaml")),
-            "agents" => (Self::agents_config_dir()?, None),
+            "role" => (Self::roles_dir()?, Some(".md")),
+            "session" => (config.read().sessions_dir()?, Some(".yaml")),
+            "rag" => (Self::rags_dir()?, Some(".yaml")),
+            "agent-data" => (Self::agents_data_dir()?, None),
             _ => bail!("Unknown kind '{kind}'"),
         };
         let names = match read_dir(&dir) {
@@ -706,7 +713,7 @@ impl Config {
                 }
             }
         }
-        println!("✨ Successfully deleted {kind}");
+        println!("✨ Successfully deleted {kind}.");
         Ok(())
     }
 
@@ -826,7 +833,7 @@ impl Config {
 
     pub fn use_role_obj(&mut self, role: Role) -> Result<()> {
         if self.agent.is_some() {
-            bail!("Cannot perform this action because you are using a agent")
+            bail!("Cannot perform this operation because you are using a agent")
         }
         if let Some(session) = self.session.as_mut() {
             session.guard_empty()?;
@@ -838,22 +845,25 @@ impl Config {
     }
 
     pub fn role_info(&self) -> Result<String> {
-        if let Some(role) = &self.role {
-            return Ok(role.export());
-        } else if let Some(session) = &self.session {
-            let role = session.to_role();
-            if !role.name().is_empty() {
-                return Ok(role.export());
+        if let Some(session) = &self.session {
+            if session.role_name().is_some() {
+                let role = session.to_role();
+                Ok(role.export())
+            } else {
+                bail!("No session role")
             }
+        } else if let Some(role) = &self.role {
+            Ok(role.export())
+        } else {
+            bail!("No role")
         }
-        bail!("No role");
     }
 
     pub fn exit_role(&mut self) -> Result<()> {
-        if self.role.is_some() {
-            if let Some(session) = self.session.as_mut() {
-                session.clear_role();
-            }
+        if let Some(session) = self.session.as_mut() {
+            session.guard_empty()?;
+            session.clear_role();
+        } else if self.role.is_some() {
             self.role = None;
         }
         Ok(())
@@ -1184,7 +1194,7 @@ impl Config {
         abort_signal: AbortSignal,
     ) -> Result<()> {
         if config.read().agent.is_some() {
-            bail!("Cannot perform this action because you are using a agent")
+            bail!("Cannot perform this operation because you are using a agent")
         }
         let rag = match rag {
             None => {
@@ -1212,12 +1222,61 @@ impl Config {
         Ok(())
     }
 
+    pub async fn edit_rag_docs(config: &GlobalConfig, abort_signal: AbortSignal) -> Result<()> {
+        let mut rag = match config.read().rag.clone() {
+            Some(v) => v.as_ref().clone(),
+            None => bail!("No RAG"),
+        };
+
+        let document_paths = rag.document_paths();
+        let temp_file = temp_file(&format!("-rag-{}", rag.name()), ".txt");
+        tokio::fs::write(&temp_file, &document_paths.join("\n"))
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to write current document paths to '{}'",
+                    temp_file.display()
+                )
+            })?;
+        let editor = config.read().editor()?;
+        edit_file(&editor, &temp_file)?;
+        let new_document_paths =
+            tokio::fs::read_to_string(&temp_file)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to read new document paths from '{}'",
+                        temp_file.display()
+                    )
+                })?;
+        let new_document_paths = new_document_paths
+            .split('\n')
+            .filter_map(|v| {
+                let v = v.trim();
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v.to_string())
+                }
+            })
+            .collect::<Vec<_>>();
+        if new_document_paths.is_empty() || new_document_paths == document_paths {
+            bail!("No changes")
+        }
+        rag.refresh_document_paths(&new_document_paths, config, abort_signal)
+            .await?;
+        config.write().rag = Some(Arc::new(rag));
+        Ok(())
+    }
+
     pub async fn rebuild_rag(config: &GlobalConfig, abort_signal: AbortSignal) -> Result<()> {
         let mut rag = match config.read().rag.clone() {
             Some(v) => v.as_ref().clone(),
             None => bail!("No RAG"),
         };
-        rag.rebuild(config, abort_signal).await?;
+        let document_paths = rag.document_paths().to_vec();
+        rag.refresh_document_paths(&document_paths, config, abort_signal)
+            .await?;
         config.write().rag = Some(Arc::new(rag));
         Ok(())
     }
@@ -1546,7 +1605,7 @@ impl Config {
                         .map(|v| (format!("{v} "), None))
                         .collect()
                 }
-                ".delete" => map_completion_values(vec!["roles", "sessions", "rags", "agents"]),
+                ".delete" => map_completion_values(vec!["role", "session", "rag", "agent-data"]),
                 _ => vec![],
             };
             filter = args[0]
@@ -2104,6 +2163,9 @@ fn create_config_file(config_path: &Path) -> Result<()> {
     config[CLIENTS_FIELD] = clients_config;
 
     let config_data = serde_yaml::to_string(&config).with_context(|| "Failed to create config")?;
+    let config_data = format!(
+        "# see https://github.com/sigoden/aichat/blob/main/config.example.yaml\n\n{config_data}"
+    );
 
     ensure_parent_exists(config_path)?;
     std::fs::write(config_path, config_data).with_context(|| "Failed to write to config file")?;
@@ -2114,7 +2176,7 @@ fn create_config_file(config_path: &Path) -> Result<()> {
         std::fs::set_permissions(config_path, perms)?;
     }
 
-    println!("✨ Saved config file to '{}'\n", config_path.display());
+    println!("✨ Saved config file to '{}'.\n", config_path.display());
 
     Ok(())
 }

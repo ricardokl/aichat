@@ -13,14 +13,12 @@ mod utils;
 extern crate log;
 
 use crate::cli::Cli;
-use crate::client::{
-    call_chat_completions, call_chat_completions_streaming, list_chat_models, ChatCompletionsOutput,
-};
+use crate::client::{call_chat_completions, call_chat_completions_streaming, list_chat_models};
 use crate::config::{
     ensure_parent_exists, list_agents, load_env_file, Config, GlobalConfig, Input, WorkingMode,
     CODE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE, TEMP_SESSION_NAME,
 };
-use crate::function::{eval_tool_calls, need_send_tool_results};
+use crate::function::need_send_tool_results;
 use crate::render::render_error;
 use crate::repl::Repl;
 use crate::utils::*;
@@ -141,8 +139,11 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
     }
     let is_repl = config.read().working_mode.is_repl();
     if cli.execute && !is_repl {
+        if cfg!(target_os = "macos") && !stdin().is_terminal() {
+            bail!("Unable to read the pipe for shell execution on MacOS")
+        }
         let input = create_input(&config, text, &cli.file).await?;
-        shell_execute(&config, &SHELL, input).await?;
+        shell_execute(&config, &SHELL, input, abort_signal.clone()).await?;
         return Ok(());
     }
     config.write().apply_prelude()?;
@@ -171,29 +172,10 @@ async fn start_directive(
     let client = input.create_client()?;
     let extract_code = !*IS_STDOUT_TERMINAL && code_mode;
     config.write().before_chat_completion(&input)?;
-    let (output, tool_results) = if !config.read().stream || extract_code {
-        let task = client.chat_completions(input.clone());
-        let ret = run_with_spinner(task, "Generating").await;
-        match ret {
-            Ok(ret) => {
-                let ChatCompletionsOutput {
-                    mut text,
-                    tool_calls,
-                    ..
-                } = ret;
-                if !text.is_empty() {
-                    if extract_code && text.trim_start().starts_with("```") {
-                        text = extract_block(&text);
-                    }
-                    config.read().print_markdown(&text)?;
-                }
-                (text, eval_tool_calls(config, tool_calls)?)
-            }
-            Err(err) => return Err(err),
-        }
+    let (output, tool_results) = if !input.stream() || extract_code {
+        call_chat_completions(&input, extract_code, client.as_ref(), abort_signal.clone()).await?
     } else {
-        call_chat_completions_streaming(&input, client.as_ref(), config, abort_signal.clone())
-            .await?
+        call_chat_completions_streaming(&input, client.as_ref(), abort_signal.clone()).await?
     };
     config
         .write()
@@ -219,17 +201,20 @@ async fn start_interactive(config: &GlobalConfig) -> Result<()> {
 }
 
 #[async_recursion::async_recursion]
-async fn shell_execute(config: &GlobalConfig, shell: &Shell, mut input: Input) -> Result<()> {
+async fn shell_execute(
+    config: &GlobalConfig,
+    shell: &Shell,
+    mut input: Input,
+    abort_signal: AbortSignal,
+) -> Result<()> {
     let client = input.create_client()?;
     config.write().before_chat_completion(&input)?;
-    let ret = if *IS_STDOUT_TERMINAL {
-        let spinner = create_spinner("Generating").await;
-        let ret = client.chat_completions(input.clone()).await;
-        spinner.stop();
-        ret
-    } else {
-        client.chat_completions(input.clone()).await
-    };
+    let ret = abortable_run_with_spinner(
+        client.chat_completions(input.clone()),
+        "Generating",
+        abort_signal.clone(),
+    )
+    .await;
     let mut eval_str = ret?.text;
     if let Ok(true) = CODE_BLOCK_RE.is_match(&eval_str) {
         eval_str = extract_block(&eval_str);
@@ -245,7 +230,7 @@ async fn shell_execute(config: &GlobalConfig, shell: &Shell, mut input: Input) -
         return Ok(());
     }
     if *IS_STDOUT_TERMINAL {
-        let options = ["execute", "revise", "describe", "cancel"];
+        let options = ["execute", "revise", "describe", "copy", "quit"];
         let command = color_text(eval_str.trim(), nu_ansi_term::Color::Rgb(255, 165, 0));
         let first_letter_color = nu_ansi_term::Color::Cyan;
         let prompt_text = options
@@ -257,12 +242,14 @@ async fn shell_execute(config: &GlobalConfig, shell: &Shell, mut input: Input) -
             println!("{command}");
             let answer = Text::new(&format!("{prompt_text}:"))
                 .with_default("e")
-                .with_validator(|input: &str| match matches!(input, "e" | "r" | "d" | "c") {
-                    true => Ok(Validation::Valid),
-                    false => Ok(Validation::Invalid(
-                        "Invalid option, choice one of e, r, d or c".into(),
-                    )),
-                })
+                .with_validator(
+                    |input: &str| match matches!(input, "e" | "r" | "d" | "c" | "q") {
+                        true => Ok(Validation::Valid),
+                        false => Ok(Validation::Invalid(
+                            "Invalid option, choice one of e, r, d, c or q".into(),
+                        )),
+                    },
+                )
                 .prompt()?;
 
             match answer.as_str() {
@@ -277,20 +264,28 @@ async fn shell_execute(config: &GlobalConfig, shell: &Shell, mut input: Input) -
                     let revision = Text::new("Enter your revision:").prompt()?;
                     let text = format!("{}\n{revision}", input.text());
                     input.set_text(text);
-                    return shell_execute(config, shell, input).await;
+                    return shell_execute(config, shell, input, abort_signal.clone()).await;
                 }
                 "d" => {
                     let role = config.read().retrieve_role(EXPLAIN_SHELL_ROLE)?;
                     let input = Input::from_str(config, &eval_str, Some(role));
-                    let abort = create_abort_signal();
-                    if config.read().stream {
-                        call_chat_completions_streaming(&input, client.as_ref(), config, abort)
-                            .await?;
+                    if input.stream() {
+                        call_chat_completions_streaming(
+                            &input,
+                            client.as_ref(),
+                            abort_signal.clone(),
+                        )
+                        .await?;
                     } else {
-                        call_chat_completions(&input, client.as_ref(), config).await?;
+                        call_chat_completions(&input, false, client.as_ref(), abort_signal.clone())
+                            .await?;
                     }
                     println!();
                     continue;
+                }
+                "c" => {
+                    set_text(&eval_str)?;
+                    println!("{}", dimmed_text("✓ Copied the command."));
                 }
                 _ => {}
             }

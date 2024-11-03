@@ -31,7 +31,7 @@ lazy_static::lazy_static! {
 const MENU_NAME: &str = "completion_menu";
 
 lazy_static::lazy_static! {
-    static ref REPL_COMMANDS: [ReplCommand; 34] = [
+    static ref REPL_COMMANDS: [ReplCommand; 35] = [
         ReplCommand::new(".help", "Show this help message", AssertState::pass()),
         ReplCommand::new(".info", "View system info", AssertState::pass()),
         ReplCommand::new(".model", "Change the current LLM", AssertState::pass()),
@@ -106,6 +106,11 @@ lazy_static::lazy_static! {
             AssertState::False(StateFlags::AGENT)
         ),
         ReplCommand::new(
+            ".edit rag-docs",
+            "Edit the RAG documents",
+            AssertState::True(StateFlags::RAG),
+        ),
+        ReplCommand::new(
             ".rebuild rag",
             "Rebuild the RAG to sync document changes",
             AssertState::True(StateFlags::RAG),
@@ -162,9 +167,9 @@ lazy_static::lazy_static! {
             "Regenerate the last response",
             AssertState::pass()
         ),
+        ReplCommand::new(".copy", "Copy the last response", AssertState::pass()),
         ReplCommand::new(".set", "Adjust runtime configuration", AssertState::pass()),
         ReplCommand::new(".delete", "Delete roles/sessions/RAGs/agents", AssertState::pass()),
-        ReplCommand::new(".copy", "Copy the last response", AssertState::pass()),
         ReplCommand::new(".exit", "Exit the REPL", AssertState::pass()),
     ];
     static ref COMMAND_RE: Regex = Regex::new(r"^\s*(\.\S*)\s*").unwrap();
@@ -360,8 +365,11 @@ impl Repl {
                         Some(("session", _)) => {
                             self.config.write().edit_session()?;
                         }
+                        Some(("rag-docs", _)) => {
+                            Config::edit_rag_docs(&self.config, self.abort_signal.clone()).await?;
+                        }
                         _ => {
-                            println!(r#"Usage: .edit <role|session>"#)
+                            println!(r#"Usage: .edit <role|session|rag-docs>"#)
                         }
                     }
                 }
@@ -375,7 +383,7 @@ impl Repl {
                             let ret = Config::compress_session(&self.config).await;
                             spinner.stop();
                             ret?;
-                            println!("✨ Successfully compressed the session");
+                            println!("✨ Successfully compressed the session.");
                         }
                         _ => {
                             println!(r#"Usage: .compress session"#)
@@ -455,7 +463,7 @@ impl Repl {
                         Config::delete(&self.config, args)?;
                     }
                     _ => {
-                        println!("Usage: .delete <roles|sessions|rags|agents>")
+                        println!("Usage: .delete <role|session|rag|agent-data>")
                     }
                 },
                 ".copy" => {
@@ -588,7 +596,7 @@ Type ".help" for additional help.
 
     fn copy(&self, text: &str) -> Result<()> {
         if text.is_empty() {
-            bail!("Empty text")
+            bail!("No text to copy")
         }
         set_text(text)?;
         Ok(())
@@ -657,11 +665,10 @@ async fn ask(
 
     let client = input.create_client()?;
     config.write().before_chat_completion(&input)?;
-    let (output, tool_results) = if config.read().stream {
-        call_chat_completions_streaming(&input, client.as_ref(), config, abort_signal.clone())
-            .await?
+    let (output, tool_results) = if input.stream() {
+        call_chat_completions_streaming(&input, client.as_ref(), abort_signal.clone()).await?
     } else {
-        call_chat_completions(&input, client.as_ref(), config).await?
+        call_chat_completions(&input, false, client.as_ref(), abort_signal.clone()).await?
     };
     config
         .write()

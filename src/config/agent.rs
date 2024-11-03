@@ -102,7 +102,7 @@ impl Agent {
             format!("Failed to save agent config to '{}'", config_path.display())
         })?;
 
-        println!("✨ Saved agent config to '{}'", config_path.display());
+        println!("✨ Saved agent config to '{}'.", config_path.display());
         Ok(())
     }
 
@@ -114,7 +114,7 @@ impl Agent {
             .display()
             .to_string()
             .into();
-        value["config_dir"] = Config::agent_config_dir(&self.name)?
+        value["data_dir"] = Config::agent_data_dir(&self.name)?
             .display()
             .to_string()
             .into();
@@ -136,10 +136,6 @@ impl Agent {
 
     pub fn functions(&self) -> &Functions {
         &self.functions
-    }
-
-    pub fn definition(&self) -> &AgentDefinition {
-        &self.definition
     }
 
     pub fn rag(&self) -> Option<Arc<Rag>> {
